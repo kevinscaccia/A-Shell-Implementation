@@ -21,10 +21,10 @@
 #define FALSE 0
 #define READ_END 0
 #define WRITE_END 1
-int GLOBAL_PIPE[2];
+int GLOBAL_PIPE1[2];
 int GLOBAL_PIPE2[2];
 int MULTIPLE_PIPES = FALSE;
-int MULTIPLE_PIPES_FLAG = FALSE;
+int MULTIPLE_PIPES_IMPAR = FALSE;
 /*************************************** 
  * Protótipos
  ***************************************
@@ -103,16 +103,6 @@ char** split_commands(char* line){
  * Execução dos Comandos
  ***************************************
  ***************************************/
-void execute_pipe_operand(char* commands){
-	print_alert("Pipe Operator detected!");
-	// comandos separados por um pipe
-	char* command_0 = commands;
-	int i = 0;
-	while(commands[i] != '|')// encontra o pipe
-		i++;
-	char* command_1 = &commands[i+1];// pega o comando(depois do pipe)
-	printf("PIPE: Comando 0: %s, Comando 1: %s",command_0, command_1);
-}
 char** get_command_parameters(char** matrix, int* index){
 	char** args = (char**) malloc(sizeof(char*)*MAX_COMMAND_SIZE);
 	int i = *index;  // le argumentos a partir do comando atual
@@ -148,142 +138,126 @@ int sem_operador(char** commands, int* index){
 	}
 	return SHELL_STATUS_CONTINUE;
 }
+void close_fd(int fd){
+	if(fd != 0 && fd != 1)
+		close(fd);
+}
+// PRIMEIRO SEMPRE ESCREVE NO PIPE 1
 int operador_depois(char** commands, int* index){
+	MULTIPLE_PIPES_IMPAR = !MULTIPLE_PIPES_IMPAR;
 	pid_t filho;
-	// resolver operador
-	if(TRUE){//commands[*index+1][0] == '|'){
-		print_alert("Primeiro Comando");
-		char** com_mat = get_command_parameters(commands, index);
-		// Cria pipe pro acesso // primeiro pipe
-		if(pipe(GLOBAL_PIPE) < 0){
-			print_error("Erro ao criar PIPE 1");
-		}else{
-			filho = fork();
-			if(filho == 0){  // Processo Filho
-				close(GLOBAL_PIPE[READ_END]);// FILHO nao lê no PIPE 1
-				dup2(GLOBAL_PIPE[WRITE_END], STDOUT_FILENO); // FILHO ESCREVE NO PIPE 1
-				// substitui espaço de endereçamento (comando atual[i])
-				if(execvp(com_mat[0], com_mat) < 0){
-					print_error("Comando possívelmente inválido ou incompleto:");
-					perror("->");
-					return SHELL_STATUS_CONTINUE;
-				}
-			}else{
-                close(GLOBAL_PIPE[WRITE_END]);// PAI NAO ESCREVE NO PIPE 1 MAS PRECISA LER DELE (FILHO)
-				waitpid(filho, NULL, 0);
-				print_alert("Primeiro filho terminou");
-				
-			}
-			// Redireciona saida do commando atual
-			// para o pipe, para posterior uso
+	pipe(GLOBAL_PIPE1);// CRIA PIPE 1
+	char** com_mat = get_command_parameters(commands, index);// PEGA OS PARAMETROS
+	filho = fork();// FORK NO FILHO
+	if(filho == 0){  // PRIMEIRO COMANDO
+		close_fd(GLOBAL_PIPE1[READ_END]);// FILHO NUNCA LÊ DO PIPE 1
+		dup2(GLOBAL_PIPE1[WRITE_END], STDOUT_FILENO); // FILHO SEMPRE ESCREVE NO PIPE 1
+		if(execvp(com_mat[0], com_mat) < 0){  // EXECUTA O COMANDO
+			print_error("Comando possívelmente inválido ou incompleto:");
+			return SHELL_STATUS_CONTINUE;
 		}
+	}else{ // CODIGO DO PAI
+    	close_fd(GLOBAL_PIPE1[WRITE_END]);// PAI NAO ESCREVE NO PIPE 1 MAS PRECISA LER DELE (FILHO)
+		waitpid(filho, NULL, 0);  // ESPERA FILHO 1
+		print_alert("Primeiro comando terminou");
 	}
 	return SHELL_STATUS_CONTINUE;
 }
+// ULTIMO COMANDO: SEMPRE ESCREVE NA SAIDA PADRÃO; PODE LER DO PIPE 1 OU DO 2
+// LE DO PIPE 1 CASO NAO HOUVER COMANDOS INTERNOS OU TIVER UM NUMERO PAR DE COMANDOS INTERNOS
+// LE DO PIPE 2 CASO HOUVER UM NUMERO IMPAR DE COMANDOS INTERNOS
 int operador_antes(char** commands, int* index){
 	pid_t filho;
-	if(TRUE){//commands[*index-1][0] == '|'){
-		// Como existe operador antes, o pipe ja foi criado
-		char** com_mat = get_command_parameters(commands, index);// ANTES DO FORK
-
-		filho = fork();
-		if(filho == 0){
-		
-		    if(MULTIPLE_PIPES){  // mais de 2 pipes: LÊ de um dos dois
-		    	if(!MULTIPLE_PIPES_FLAG){// NUMERO IMPAR DE COMANDOS INTERNOS
-		    		dup2(GLOBAL_PIPE2[READ_END], STDIN_FILENO); // LE DO PIPE 2		
-			    	print_alert("Eu deveria escrever na saida padrao");
-		    	}else{ // numero par de pipes internos
-		    		dup2(GLOBAL_PIPE[READ_END], STDIN_FILENO); // LE DO PIPE 1	
-			    	print_alert("Eu deveria escrever na saida padrao");
-		    	}
-            }else{  // um unico pipe, LE do pipe 1
-                print_alert("Ultimo comando | um unico pipe");
-			    dup2(GLOBAL_PIPE[READ_END], STDIN_FILENO); // LE DO PIPE 1
-            }
-			if(execvp(com_mat[0], com_mat) < 0){
-				print_error("Comando possívelmente inválido ou incompleto:");
-				perror("->");
-				//return SHELL_STATUS_CONTINUE;
-			}
-		}else{
-		    if(MULTIPLE_PIPES){  // mais de 1 pipe: close nos dois
-                close(GLOBAL_PIPE[READ_END]);// fecha pipe 1 para 															o pai
-                close(GLOBAL_PIPE[WRITE_END]);// fecha pipe 1 para o pai
-                close(GLOBAL_PIPE2[READ_END]);// fecha pipe 2 para o pai
-                close(GLOBAL_PIPE2[WRITE_END]);// fecha pipe 2 para o pai
-            }else{  // um unico pipe: close em um só
-                close(GLOBAL_PIPE[READ_END]);// PAI NAO LÊ // pipe nao existe mais
-            }
-			waitpid(filho, NULL, 0);
-			print_alert("Ultimo filho terminou");
-		}		
-		
-	}																																							
+	char** com_mat = get_command_parameters(commands, index);// ANTES DO FORK	
+	filho = fork();
+	if(filho == 0){ 
+		if(MULTIPLE_PIPES_IMPAR){// IMPAR
+			dup2(GLOBAL_PIPE1[READ_END], STDIN_FILENO); // LE DO PIPE 1
+		}else{// OU LE DO 1 OU LE DO 2:
+			dup2(GLOBAL_PIPE2[READ_END], STDIN_FILENO); // LE DO PIPE 2
+		}
+		if(execvp(com_mat[0], com_mat) < 0){
+			print_error("Comando possívelmente inválido ou incompleto:");
+			return SHELL_STATUS_CONTINUE;
+		}
+	}else{ // PAI
+		if(MULTIPLE_PIPES_IMPAR){// IMPAR
+			close_fd(GLOBAL_PIPE1[READ_END]); // LE DO PIPE 1
+		}else{// OU LE DO 1 OU LE DO 2:
+			close_fd(GLOBAL_PIPE2[READ_END]); // LE DO PIPE 2
+		}
+		waitpid(filho, NULL, 0);
+		print_alert("ultimo filho terminou");
+	}															
 	return SHELL_STATUS_CONTINUE;
 }
-
 int operador_antes_e_depois(char** commands, int* index){
+	MULTIPLE_PIPES_IMPAR = !MULTIPLE_PIPES_IMPAR;
 	pid_t filho;
-	if(TRUE){//commands[*index-1][0] == '|'){
-		// Como existe operador antes, o pipe ja foi criado
-		char** com_mat = get_command_parameters(commands, index);// ANTES DO FORK
-		
-		if(!MULTIPLE_PIPES){
-		    // primeiro comando 'do meio' criado
-		    // cria o segundo pipe auxiliar
-		    
-		    if(MULTIPLE_PIPES_FLAG){
-		    	
-		    }else{// cria o pipe 2
-		    	if(pipe(GLOBAL_PIPE2) < 0)
-		        	return -1;
-		    }
-		    
+	char** com_mat = get_command_parameters(commands, index);// ANTES DO FORK
+	if(MULTIPLE_PIPES_IMPAR){ // 
+		// CRIA PIPE 1
+    	if(pipe(GLOBAL_PIPE1) < 0)
+    		print_error("ERRO PIPE 1");
+    	print_alert("criou pipe 1");
+    }else{// PAR
+    	// CRIA PIPE 2
+    	if(pipe(GLOBAL_PIPE2) < 0)
+    		print_error("ERRO PIPE 2");
+    	print_alert("criou pipe 2");
+    }
+	filho = fork();
+	if(filho == 0){
+    	print_alert("COMANDO DO MEIO");
+		if(MULTIPLE_PIPES_IMPAR){ // IMPAR
+			dup2(GLOBAL_PIPE2[READ_END], STDIN_FILENO);// LER DO PIPE 2
+			dup2(GLOBAL_PIPE1[WRITE_END], STDOUT_FILENO); // ESCREVER NO PIPE 1
+		}else{ // PAR
+			dup2(GLOBAL_PIPE1[READ_END], STDIN_FILENO);// LER DO PIPE 1
+			dup2(GLOBAL_PIPE2[WRITE_END], STDOUT_FILENO); // ESCREVER NO PIPE 2
 		}
-		
-		filho = fork();
-		// ja tem um pipe criado (GLOBAL_PIPE) para leitura,
-		// pai tem acesso a leitura no pipe1
-		if(filho == 0){
-		    
-		    if(!MULTIPLE_PIPES){ // primeiro comando 'do meio' criado, filho lê do pipe 1 e escreve no 2
-               print_alert("Primeiro comando do meio");
-               dup2(GLOBAL_PIPE[READ_END], STDIN_FILENO); // lê do PIPE 1
-               dup2(GLOBAL_PIPE2[WRITE_END], STDOUT_FILENO); // escreve no PIPE 2
-            }else{  // mais de 2 pipes
-                print_alert("Comando do meio: mais de dois pipes");
-            }
-			if(execvp(com_mat[0], com_mat) < 0){
-				print_error("Comando possívelmente inválido ou incompleto:");
-				perror("->");
-				//return SHELL_STATUS_CONTINUE;
-			}
-		}else{ // codigo do pai
-		    if(MULTIPLE_PIPES){ // mais de 2 pipes,
-                
-            }else{  // um unico filho do meio. pai fecha a escrita no pipe 2 e a leitura do pipe1
-                close(GLOBAL_PIPE[READ_END]);// fecha pipe LEITURA 1 para o pai // pipe 1 nao 'existe' mais
-                close(GLOBAL_PIPE2[WRITE_END]);// fecha ESCRITA pipe 2 para o pai
-            }
-			waitpid(filho, NULL, 0);
-			MULTIPLE_PIPES = TRUE; // indica que ja foi criado o pipe 2
-			print_alert("Filho do meio terminou");
-			return SHELL_STATUS_CONTINUE;
-		}		
-		return SHELL_STATUS_CONTINUE;
+		if(execvp(com_mat[0], com_mat) < 0)
+			print_error("Comando possívelmente inválido ou incompleto:");
 	}else{
-		return SHELL_STATUS_CONTINUE;
+		if(MULTIPLE_PIPES_IMPAR){ // IMPAR
+			close_fd(GLOBAL_PIPE2[READ_END]);// JA PASSOU PARA O FILHO
+			close_fd(GLOBAL_PIPE1[WRITE_END]); // SOMENTE FILHO ESCREVE NO PIPE
+		}else{ 
+			close_fd(GLOBAL_PIPE1[READ_END]);// JA PASSOU PARA O FILHO
+			close_fd(GLOBAL_PIPE2[WRITE_END]); // SOMENTE FILHO ESCREVE NO PIPE
+		}
+		waitpid(filho, NULL, 0);
+		print_alert("Filho do meio terminou");
 	}
-}
-/*
-			char* inbuf = (char*)malloc(sizeof(char)*1000);
-        		while(read(GLOBAL_PIPE[READ_END], inbuf, 1000))
-        			printf("CONTEUDO: %s \n", inbuf); 
-  
 
-			//dup2(GLOBAL_PIPE_AUX[WRITE_END], STDOUT_FILENO); 
-*/
+
+
+	/*
+	
+	
+		// GERENCIA OS PIPES
+	
+	
+	
+
+    	if(MULTIPLE_PIPES_INPAR){ // IMPAR
+    		 // LE DO PIPE 1
+    		//fechar(GLOBAL_PIPE[WRITE_END]);
+        	
+        	//fechar(GLOBAL_PIPE2[READ_END]);
+    	}else{// PAR
+    		dup2(GLOBAL_PIPE2[READ_END], STDIN_FILENO); // LE DO PIPE 2
+    		//fechar(GLOBAL_PIPE2[WRITE_END]);
+        	dup2(GLOBAL_PIPE[WRITE_END], STDOUT_FILENO); // ESCREVE NO PIPE 1
+        	//fechar(GLOBAL_PIPE[READ_END]);
+    	}
+		
+	}else{ // codigo do pai
+		print_alert("esperando filho do meio");
+	
+	}*/
+	return SHELL_STATUS_CONTINUE;
+}
 int ha_operador_antes(char** commands, int index){
 	if(index <= 0)
 		return FALSE;
@@ -330,21 +304,24 @@ int execute_commands(char* line){
 	}
 	fechar_pipes_abertos();
 	MULTIPLE_PIPES = FALSE;
+	MULTIPLE_PIPES_IMPAR = FALSE;
 	printf("\033[0m");
 	return SHELL_STATUS_CONTINUE;
 }
 void fechar_pipes_abertos(){
-	if(GLOBAL_PIPE[WRITE_END] != 0)
-		close(GLOBAL_PIPE[WRITE_END]);
+	if(GLOBAL_PIPE1[WRITE_END] != 0)
+		close(GLOBAL_PIPE1[WRITE_END]);
 		
-	if(GLOBAL_PIPE[READ_END] != 0)
-		close(GLOBAL_PIPE[READ_END]);
+	if(GLOBAL_PIPE1[READ_END] != 0)
+		close(GLOBAL_PIPE1[READ_END]);
 		
 	if(GLOBAL_PIPE2[WRITE_END] != 0)
 		close(GLOBAL_PIPE2[WRITE_END]);
 		
 	if(GLOBAL_PIPE2[READ_END] != 0)
 		close(GLOBAL_PIPE2[READ_END]);
+		
+		
 }
 /*************************************** 
  * Funções e Procedimentos Auxiliares
