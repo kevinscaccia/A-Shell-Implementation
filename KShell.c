@@ -1,4 +1,46 @@
-/*************************************** 
+/* Copyright (C) Kevin Costa Scaccia - All Rights Reserved
+ * Unauthorized copying of this file, via any medium is strictly prohibited
+ * Proprietary and confidential
+ * Written by Kevin Scaccia <kevin_developer@outlook.com>, March 2019
+ */
+
+/************************
+	Shell functionality
+*******************
+1. Single Commands(without args):
+	>> ls
+	>> ps 
+	>> clear
+*******************
+2. Single Commands(with args):
+	>> ls -ax
+	>> ps all	
+*******************
+3. Commands(without args) related by a unique PIPE:
+	>> ps | grep b
+	>> ls | grep out
+*******************
+4. Commands(with args) related by a unique PIPE:
+	>> ps all | grep gnome
+	>> ls -ax | grep out
+*******************
+5. Commands(with args) related by any PIPE:
+	>> ps all | grep gnome
+	>> ls -ax | grep out
+	>> ls -ax | grep a | grep b | grep a | more
+*******************
+6. One or Two Commands(with args) to run assync:
+	>> gedit & 
+	>> ps all & gedit
+	>> ping www.google.com & ls
+	>> gedit & ls
+*******************
+6. Multiple Commands(with args) to run assync:
+	>> ps & ps -ax & gedit
+	>> ls & ls & ls & nano
+*******************
+*/
+ /*************************************** 
  * Includes
  ***************************************
  ***************************************/
@@ -9,7 +51,7 @@
 #include <string.h>
 #include <sys/queue.h>
 /*************************************** 
- * Constantes
+ * Constants
  ***************************************
  ***************************************/
 #define LINE_BUFFER_SIZE 100
@@ -23,30 +65,47 @@
 #define WRITE_END 1
 int GLOBAL_PIPE1[2];
 int GLOBAL_PIPE2[2];
-int MULTIPLE_PIPES = FALSE;
-int MULTIPLE_PIPES_IMPAR = FALSE;
+int MULTIPLE_PIPES_FLAG = FALSE;
 /*************************************** 
- * Protótipos
+ * Prototypes
  ***************************************
  ***************************************/
-//Ciclo de vida do Shell
-void loop_shell();
+// Shell LifeCycle Functions
 void start_shell();
+void loop_shell();
 void finish_shell();
-// Manipulação e Execução dos Comandos
+// Command Manipulation
 char** split_commands(char* line);
-int execute_commands(char* line);
 char** get_command_parameters(char** matrix, int* index);
-// Funções e Procedimentos Auxiliares
-void print_commands(char** matrix);
+// Command Execution
+int execute_commands(char* line);
+int execute_standard_sync_command(char** argsv);
+int execute_standard_async_command(char** argv);
+// Operator Position Idenftify
+int cmd_no_operator(char** argsv);  // command without operator
+int cmd_before_operator(char** argsv, char* operator);
+int cmd_between_operator(char** argsv, char* before_operator, char* after_operator); // command between operators
+int cmd_after_operator(char** argsv, char* operator);  // command after operator
+int is_operator(char* str, char operator);
+int exists_operator_before(char** commands, int index);  // if there's a operator before the index
+int exists_operator_after(char** commands, int index);  // if there's a operator after the index
+// Operator Handling
+int cmd_before_operator_handle_pipe(char** commands);  // command before operator
+int cmd_between_operator_handle_pipe_pipe(char** argsv);  // command between operators
+int cmd_after_operator_handle_pipe(char** argsv);  // command after operator
+int cmd_before_operator_handle_background(char** commands, int* index);  // command to run in background
+// Auxiliary Functions and Procedures
+void close_fd(int fd);
 void read_line(char* buffer);
 int is_operador(char* c);
 int is_operador_char(char c);
 int is_command(char* c);
+void close_pipes();
+// Print and Format Procedures
+void print_commands(char** command_matrix);
 void print_error(char* c);
 void print_alert(char* c);
 void printf_alert(char* format, char* c);
-void fechar_pipes_abertos();
 /*************************************** 
  * Main
  ***************************************
@@ -58,7 +117,7 @@ int main(int argc, char** argv){
 	return 0;
 }
 /*************************************** 
- * Ciclo de vida do Shell
+ * Shell LifeCycle
  ***************************************
  ***************************************/
 void start_shell(){
@@ -67,17 +126,15 @@ void start_shell(){
 	printf("\n---------------------------------------\n");
 }
 void loop_shell(){
-	// Buffer para leitura da linha
-	char *line;
-	int status; // status dos comandos
+	char *line;  // line read buffer
+	int status; // commands return status
 	do{
 		line = (char*) malloc(sizeof(char)*LINE_BUFFER_SIZE);
-		// lê comando da entrada padrão
-		printf("\033[0;1m >> \033[0m");
-		read_line(line);// passa o ponteiro da linha	
-		// parseia os comandos em uma matriz de comandos
+		printf("\033[0;1m >> \033[0m");  
+		read_line(line);// reads the line from stdin
+		// parse commands in a command matrix
 		status = execute_commands(line);
-		free(line);
+		free(line);// I don't know if it's necessary
 	}while(status == SHELL_STATUS_CONTINUE);
 
 }
@@ -85,10 +142,9 @@ void finish_shell(){
 	printf("\033[0;1m----------------------------------\033[1;31mbye\033[0;1m..\n");
 }
 /*************************************** 
- * Manipulação dos Comandos
+ * Command Management
  ***************************************
  ***************************************/
-
 char** split_commands(char* line){
 		char ** commands = (char**) malloc(sizeof(char*)*MAX_COMMAND_BY_LINE*MAX_COMMAND_SIZE);
 	int i = 0;
@@ -99,10 +155,6 @@ char** split_commands(char* line){
 	}
 	return commands;
 }
-/*************************************** 
- * Execução dos Comandos
- ***************************************
- ***************************************/
 char** get_command_parameters(char** matrix, int* index){
 	char** args = (char**) malloc(sizeof(char*)*MAX_COMMAND_SIZE);
 	int i = *index;  // le argumentos a partir do comando atual
@@ -120,82 +172,139 @@ char** get_command_parameters(char** matrix, int* index){
 	*index = i;
 	return args;
 }
-int sem_operador(char** commands, int* index){
-	pid_t filho;
-	char** com_mat = get_command_parameters(commands, index);
-	//print_commands(com_mat);
-	filho = fork();
-	if(filho == 0){
-		if(execvp(com_mat[0], com_mat) < 0){
-				print_error("Comando possívelmente inválido ou incompleto:");
-				perror("->");
-				return SHELL_STATUS_CONTINUE;
+/*************************************** 
+ * Execução dos Comandos
+ ***************************************
+ ***************************************/
+int execute_commands(char* line){
+	char** command_tokens = split_commands(line);  // Split line in command tokens
+	//print_commands(command_tokens);
+	int i = 0, status;
+	while(command_tokens[i] != NULL){
+		if(is_command(command_tokens[i])){// encontrou um COMANDO
+			char** argsv; // Command Args
+			if(exists_operator_before(command_tokens, i)){
+				if(exists_operator_after(command_tokens, i)){
+					print_alert("There's a command between operators");
+					char* before_operator = command_tokens[i-1];  // before operator (always is the token before the command itself)
+					argsv = get_command_parameters(command_tokens, &i);// get command arguments
+					char* after_operator = command_tokens[i];  // after operator
+					status = cmd_between_operator(argsv, before_operator, after_operator);// handle operator and execute the command
+				}else{
+					print_alert("There's a operator before command");
+					char* operator = command_tokens[i-1];  // actual operator (always is the token before the command itself)
+					argsv = get_command_parameters(command_tokens, &i);// get command arguments
+					status = cmd_after_operator(argsv, operator);// handle operator and execute the command
+				}
+			}else if(exists_operator_after(command_tokens, i)){
+				print_alert("There's a operator after command");
+				argsv = get_command_parameters(command_tokens, &i);// get command arguments
+				char* operator = command_tokens[i];  // actual operator
+				status = cmd_before_operator(argsv, operator);// handle operator and execute the command
 			}else{
-				printf("Executado corretamente");
+				print_alert("Single Command");
+				argsv = get_command_parameters(command_tokens, &i);// get command arguments
+				status = cmd_no_operator(argsv);
 			}
+		}
+		i++; // Next Token
+	}
+	close_pipes();
+	MULTIPLE_PIPES_FLAG = FALSE;
+	printf("\033[0m");
+	return status;// SHELL_STATUS_CONTINUE
+}
+int execute_standard_sync_command(char** argsv){
+	pid_t child;
+	//print_commands(com_mat);
+	child = fork();
+	if(child == 0){
+		if(execvp(argsv[0], argsv) < 0){
+			print_error("Comando possívelmente invalido ou incompleto:");
+			perror("->");
+		}
 	}else{
-		waitpid(filho, NULL, 0);
+		waitpid(child, NULL, 0);
 	}
 	return SHELL_STATUS_CONTINUE;
 }
-void close_fd(int fd){
-	if(fd != 0 && fd != 1)
-		close(fd);
+int execute_standard_async_command(char** argv){
+	print_alert("Background Command");
+	pid_t child;
+	child = fork();// FORK NO child
+	if(child == 0){  // PRIMEIRO COMANDO
+		if(execvp(argv[0], argv) < 0){  // EXECUTA O COMANDO
+			print_error("Comando possívelmente invalido ou incompleto:");
+			perror("->");
+		}
+	}else{ // CODIGO DO PAI
+		//waitpid(child, NULL, 0); Aqui esta o segredo hehe
+		print_alert("Async command finished");
+	}
+	return SHELL_STATUS_CONTINUE;
 }
-// PRIMEIRO SEMPRE ESCREVE NO PIPE 1
-int operador_depois(char** commands, int* index){
-	MULTIPLE_PIPES_IMPAR = !MULTIPLE_PIPES_IMPAR;
-	pid_t filho;
+/*************************************** 
+ * Operator Position Idenftify
+ ***************************************
+ ***************************************/
+int cmd_no_operator(char** argsv){
+	return execute_standard_sync_command(argsv);
+}
+int cmd_before_operator(char** argsv, char* operator){
+	if( is_operator(operator, '|') ){  // handles pipe operator
+		print_alert("COMMAND BEFORE A PIPE");
+		return cmd_before_operator_handle_pipe(argsv);
+	}else if( is_operator(operator, '&') ){  // handles background command
+		return execute_standard_async_command(argsv);
+	}else{
+		print_error("Operador nao identificado");
+	}
+}
+int cmd_between_operator(char** argsv, char* before_operator, char* after_operator){
+	// Handles Command between two PIPEs 
+	if( is_operator(before_operator, '|') && is_operator(after_operator, '|')){
+		return cmd_between_operator_handle_pipe_pipe(argsv);
+	}else if( is_operator(before_operator, '&')){  // Assync command
+		return execute_standard_async_command(argsv);
+	}
+}
+int cmd_after_operator(char** argsv, char* operator){
+	// Handles PIPE Operator
+	if( is_operator(operator, '|') ){  // handles pipe operator
+		print_alert("COMMAND AFTER A PIPE");
+		return cmd_after_operator_handle_pipe(argsv);
+	}else if( is_operator(operator, '&') ){  // handles background cmd
+		return execute_standard_sync_command(argsv);
+	}
+}
+/*************************************** 
+ * Operator Handling
+ ***************************************
+ ***************************************/
+int cmd_before_operator_handle_pipe(char** argsv){
+	// PRIMEIRO SEMPRE ESCREVE NO PIPE 1
+	MULTIPLE_PIPES_FLAG = !MULTIPLE_PIPES_FLAG;
+	pid_t child;
 	pipe(GLOBAL_PIPE1);// CRIA PIPE 1
-	char** com_mat = get_command_parameters(commands, index);// PEGA OS PARAMETROS
-	filho = fork();// FORK NO FILHO
-	if(filho == 0){  // PRIMEIRO COMANDO
-		close_fd(GLOBAL_PIPE1[READ_END]);// FILHO NUNCA LÊ DO PIPE 1
-		dup2(GLOBAL_PIPE1[WRITE_END], STDOUT_FILENO); // FILHO SEMPRE ESCREVE NO PIPE 1
-		if(execvp(com_mat[0], com_mat) < 0){  // EXECUTA O COMANDO
-			print_error("Comando possívelmente inválido ou incompleto:");
+	child = fork();// FORK NO child
+	if(child == 0){  // PRIMEIRO COMANDO
+		close_fd(GLOBAL_PIPE1[READ_END]);// child NUNCA LÊ DO PIPE 1
+		dup2(GLOBAL_PIPE1[WRITE_END], STDOUT_FILENO); // child SEMPRE ESCREVE NO PIPE 1
+		if(execvp(argsv[0], argsv) < 0){  // EXECUTA O COMANDO
+			print_error("Comando possívelmente invalido ou incompleto:");
 			return SHELL_STATUS_CONTINUE;
 		}
 	}else{ // CODIGO DO PAI
-    	close_fd(GLOBAL_PIPE1[WRITE_END]);// PAI NAO ESCREVE NO PIPE 1 MAS PRECISA LER DELE (FILHO)
-		waitpid(filho, NULL, 0);  // ESPERA FILHO 1
-		print_alert("Primeiro comando terminou");
+    	close_fd(GLOBAL_PIPE1[WRITE_END]);// PAI NAO ESCREVE NO PIPE 1 MAS PRECISA LER DELE (child)
+		waitpid(child, NULL, 0);  // ESPERA child 1
+		print_alert("First command finished");
 	}
 	return SHELL_STATUS_CONTINUE;
 }
-// ULTIMO COMANDO: SEMPRE ESCREVE NA SAIDA PADRÃO; PODE LER DO PIPE 1 OU DO 2
-// LE DO PIPE 1 CASO NAO HOUVER COMANDOS INTERNOS OU TIVER UM NUMERO PAR DE COMANDOS INTERNOS
-// LE DO PIPE 2 CASO HOUVER UM NUMERO IMPAR DE COMANDOS INTERNOS
-int operador_antes(char** commands, int* index){
-	pid_t filho;
-	char** com_mat = get_command_parameters(commands, index);// ANTES DO FORK	
-	filho = fork();
-	if(filho == 0){ 
-		if(MULTIPLE_PIPES_IMPAR){// IMPAR
-			dup2(GLOBAL_PIPE1[READ_END], STDIN_FILENO); // LE DO PIPE 1
-		}else{// OU LE DO 1 OU LE DO 2:
-			dup2(GLOBAL_PIPE2[READ_END], STDIN_FILENO); // LE DO PIPE 2
-		}
-		if(execvp(com_mat[0], com_mat) < 0){
-			print_error("Comando possívelmente inválido ou incompleto:");
-			return SHELL_STATUS_CONTINUE;
-		}
-	}else{ // PAI
-		if(MULTIPLE_PIPES_IMPAR){// IMPAR
-			close_fd(GLOBAL_PIPE1[READ_END]); // LE DO PIPE 1
-		}else{// OU LE DO 1 OU LE DO 2:
-			close_fd(GLOBAL_PIPE2[READ_END]); // LE DO PIPE 2
-		}
-		waitpid(filho, NULL, 0);
-		print_alert("ultimo filho terminou");
-	}															
-	return SHELL_STATUS_CONTINUE;
-}
-int operador_antes_e_depois(char** commands, int* index){
-	MULTIPLE_PIPES_IMPAR = !MULTIPLE_PIPES_IMPAR;
-	pid_t filho;
-	char** com_mat = get_command_parameters(commands, index);// ANTES DO FORK
-	if(MULTIPLE_PIPES_IMPAR){ // 
+int cmd_between_operator_handle_pipe_pipe(char** argsv){
+	MULTIPLE_PIPES_FLAG = !MULTIPLE_PIPES_FLAG;
+	pid_t child;
+	if(MULTIPLE_PIPES_FLAG){ // 
 		// CRIA PIPE 1
     	if(pipe(GLOBAL_PIPE1) < 0)
     		print_error("ERRO PIPE 1");
@@ -206,59 +315,65 @@ int operador_antes_e_depois(char** commands, int* index){
     		print_error("ERRO PIPE 2");
     	print_alert("criou pipe 2");
     }
-	filho = fork();
-	if(filho == 0){
-    	print_alert("COMANDO DO MEIO");
-		if(MULTIPLE_PIPES_IMPAR){ // IMPAR
+	child = fork();
+	if(child == 0){
+    	print_alert("Middle Command");
+		if(MULTIPLE_PIPES_FLAG){ // IMPAR
 			dup2(GLOBAL_PIPE2[READ_END], STDIN_FILENO);// LER DO PIPE 2
 			dup2(GLOBAL_PIPE1[WRITE_END], STDOUT_FILENO); // ESCREVER NO PIPE 1
 		}else{ // PAR
 			dup2(GLOBAL_PIPE1[READ_END], STDIN_FILENO);// LER DO PIPE 1
 			dup2(GLOBAL_PIPE2[WRITE_END], STDOUT_FILENO); // ESCREVER NO PIPE 2
 		}
-		if(execvp(com_mat[0], com_mat) < 0)
-			print_error("Comando possívelmente inválido ou incompleto:");
+		if(execvp(argsv[0], argsv) < 0)
+			print_error("Comando possívelmente invalido ou incompleto:");
 	}else{
-		if(MULTIPLE_PIPES_IMPAR){ // IMPAR
-			close_fd(GLOBAL_PIPE2[READ_END]);// JA PASSOU PARA O FILHO
-			close_fd(GLOBAL_PIPE1[WRITE_END]); // SOMENTE FILHO ESCREVE NO PIPE
+		if(MULTIPLE_PIPES_FLAG){ // IMPAR
+			close_fd(GLOBAL_PIPE2[READ_END]);// JA PASSOU PARA O child
+			close_fd(GLOBAL_PIPE1[WRITE_END]); // SOMENTE child ESCREVE NO PIPE
 		}else{ 
-			close_fd(GLOBAL_PIPE1[READ_END]);// JA PASSOU PARA O FILHO
-			close_fd(GLOBAL_PIPE2[WRITE_END]); // SOMENTE FILHO ESCREVE NO PIPE
+			close_fd(GLOBAL_PIPE1[READ_END]);// JA PASSOU PARA O child
+			close_fd(GLOBAL_PIPE2[WRITE_END]); // SOMENTE child ESCREVE NO PIPE
 		}
-		waitpid(filho, NULL, 0);
-		print_alert("Filho do meio terminou");
+		waitpid(child, NULL, 0);
+		print_alert("child do meio terminou");
 	}
-
-
-
-	/*
-	
-	
-		// GERENCIA OS PIPES
-	
-	
-	
-
-    	if(MULTIPLE_PIPES_INPAR){ // IMPAR
-    		 // LE DO PIPE 1
-    		//fechar(GLOBAL_PIPE[WRITE_END]);
-        	
-        	//fechar(GLOBAL_PIPE2[READ_END]);
-    	}else{// PAR
-    		dup2(GLOBAL_PIPE2[READ_END], STDIN_FILENO); // LE DO PIPE 2
-    		//fechar(GLOBAL_PIPE2[WRITE_END]);
-        	dup2(GLOBAL_PIPE[WRITE_END], STDOUT_FILENO); // ESCREVE NO PIPE 1
-        	//fechar(GLOBAL_PIPE[READ_END]);
-    	}
-		
-	}else{ // codigo do pai
-		print_alert("esperando filho do meio");
-	
-	}*/
 	return SHELL_STATUS_CONTINUE;
 }
-int ha_operador_antes(char** commands, int index){
+int cmd_after_operator_handle_pipe(char** argsv){
+// ULTIMO COMANDO: SEMPRE ESCREVE NA SAIDA PADRÃO; PODE LER DO PIPE 1 OU DO 2
+// LE DO PIPE 1 CASO NAO HOUVER COMANDOS INTERNOS OU TIVER UM NUMERO PAR DE COMANDOS INTERNOS
+// LE DO PIPE 2 CASO HOUVER UM NUMERO IMPAR DE COMANDOS INTERNOS
+	pid_t child;
+	child = fork();
+	if(child == 0){ 
+		if(MULTIPLE_PIPES_FLAG){// IMPAR
+			dup2(GLOBAL_PIPE1[READ_END], STDIN_FILENO); // LE DO PIPE 1
+		}else{// OU LE DO 1 OU LE DO 2:
+			dup2(GLOBAL_PIPE2[READ_END], STDIN_FILENO); // LE DO PIPE 2
+		}
+		if(execvp(argsv[0], argsv) < 0){
+			print_error("Comando possívelmente invalido ou incompleto:");
+			return SHELL_STATUS_CONTINUE;
+		}
+	}else{ // PAI
+		if(MULTIPLE_PIPES_FLAG){// IMPAR
+			close_fd(GLOBAL_PIPE1[READ_END]); // LE DO PIPE 1
+		}else{// OU LE DO 1 OU LE DO 2:
+			close_fd(GLOBAL_PIPE2[READ_END]); // LE DO PIPE 2
+		}
+		waitpid(child, NULL, 0);
+		print_alert("Last command finished");
+	}															
+	return SHELL_STATUS_CONTINUE;
+}
+
+
+
+
+
+
+int exists_operator_before(char** commands, int index){
 	if(index <= 0)
 		return FALSE;
 	char* cmd = commands[index];
@@ -269,7 +384,7 @@ int ha_operador_antes(char** commands, int index){
 	}
 	return FALSE;
 }
-int ha_operador_depois(char** commands, int index){
+int exists_operator_after(char** commands, int index){
 	char* cmd = commands[index];
 	while(cmd != NULL){
 		if(is_operador(cmd))
@@ -278,37 +393,7 @@ int ha_operador_depois(char** commands, int index){
 	}
 	return FALSE;
 }
-int execute_commands(char* line){
-	char** commands = split_commands(line);
-	//print_commands(commands);
-	int i = 0;
-	while(commands[i] != NULL){
-		if(is_command(commands[i])){  // encontrou um COMANDO
-			if(ha_operador_antes(commands, i)){
-				if(ha_operador_depois(commands, i)){
-					print_alert("Ha operador antes e depois");
-					operador_antes_e_depois(commands, &i);
-				}else{
-					print_alert("Ha operador antes");
-					operador_antes(commands, &i);
-				}
-			}else if(ha_operador_depois(commands, i)){
-				print_alert("Ha operador depois");
-				operador_depois(commands, &i);
-			}else{
-				print_alert("Nao ha operador");
-				sem_operador(commands, &i);
-			}
-		}
-		i++;
-	}
-	fechar_pipes_abertos();
-	MULTIPLE_PIPES = FALSE;
-	MULTIPLE_PIPES_IMPAR = FALSE;
-	printf("\033[0m");
-	return SHELL_STATUS_CONTINUE;
-}
-void fechar_pipes_abertos(){
+void close_pipes(){
 	if(GLOBAL_PIPE1[WRITE_END] != 0)
 		close(GLOBAL_PIPE1[WRITE_END]);
 		
@@ -360,6 +445,10 @@ int is_operador_char(char c){
 		return TRUE;
 	return FALSE;
 }
+void close_fd(int fd){
+	if(fd != 0 && fd != 1)
+		close(fd);
+}
 int is_operador(char* c){
 	if(c == NULL)  // importante
 		return FALSE;
@@ -371,6 +460,18 @@ int is_operador(char* c){
 		return FALSE;
 	// Verifica no primeiro(e unico) char
 	return is_operador_char(c[0]);
+}
+int is_operator(char* c, char operator){
+	if(c == NULL)  // important
+		return FALSE;
+	int i = 0;
+	int cursor = c[i];
+	while(cursor != '\0' && cursor != EOF)
+		cursor = c[++i];
+	if(i != 1)  // operador de tamanho > 1
+		return FALSE;
+	// Verifica no primeiro(e unico) char
+	return (c[0] == operator);
 }
 int is_command(char* c){
 	if(c == NULL)
