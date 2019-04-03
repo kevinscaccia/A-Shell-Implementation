@@ -5,7 +5,7 @@
  */
 
 /************************
-	Shell functionality
+	Shell functionalities
 *******************
 1. Single Commands(without args):
 	>> ls
@@ -28,9 +28,10 @@
 	>> ps all | grep gnome
 	>> ls -ax | grep out
 	>> ls -ax | grep a | grep b | grep a | more
+	>> ls | ls | ls | ps | ps -ax | echo test | grep test
 *******************
 6. One or Two Commands(with args) to run assync:
-	>> gedit & 
+	>> gedit file.txt & tail file.txt -F 
 	>> ps all & gedit
 	>> ping www.google.com & ls
 	>> gedit & ls
@@ -39,6 +40,14 @@
 	>> ps & ps -ax & gedit
 	>> ls & ls & ls & nano
 *******************
+7. Multiple '&' operator followed by multiple '|':
+	>> gedit file.txt & gedit file2.txt & ps all | grep gnome | grep keyboard
+*******************
+8. K-Shell internal Commands:
+	>> close: close the shell
+	>> help: show internal commands
+
+
 */
  /*************************************** 
  * Includes
@@ -63,9 +72,6 @@
 #define FALSE 0
 #define READ_END 0
 #define WRITE_END 1
-int GLOBAL_PIPE1[2];
-int GLOBAL_PIPE2[2];
-int MULTIPLE_PIPES_FLAG = FALSE;
 /*************************************** 
  * Prototypes
  ***************************************
@@ -79,21 +85,24 @@ char** split_commands(char* line);
 char** get_command_parameters(char** matrix, int* index);
 // Command Execution
 int execute_commands(char* line);
-int execute_standard_sync_command(char** argsv);
+int execute_standard_sync_command(char** argv);
 int execute_standard_async_command(char** argv);
 // Operator Position Idenftify
-int cmd_no_operator(char** argsv);  // command without operator
-int cmd_before_operator(char** argsv, char* operator);
-int cmd_between_operator(char** argsv, char* before_operator, char* after_operator); // command between operators
-int cmd_after_operator(char** argsv, char* operator);  // command after operator
+int cmd_no_operator(char** argv);  // command without operator
+int cmd_before_operator(char** argv, char* operator);
+int cmd_between_operator(char** argv, char* before_operator, char* after_operator); // command between operators
+int cmd_after_operator(char** argv, char* operator);  // command after operator
 int is_operator(char* str, char operator);
 int exists_operator_before(char** commands, int index);  // if there's a operator before the index
 int exists_operator_after(char** commands, int index);  // if there's a operator after the index
 // Operator Handling
 int cmd_before_operator_handle_pipe(char** commands);  // command before operator
-int cmd_between_operator_handle_pipe_pipe(char** argsv);  // command between operators
-int cmd_after_operator_handle_pipe(char** argsv);  // command after operator
+int cmd_between_operator_handle_pipe_pipe(char** argv);  // command between operators
+int cmd_after_operator_handle_pipe(char** argv);  // command after operator
 int cmd_before_operator_handle_background(char** commands, int* index);  // command to run in background
+// Internal Commands
+int execute_internal_help();
+int execute_internal_last();
 // Auxiliary Functions and Procedures
 void close_fd(int fd);
 void read_line(char* buffer);
@@ -106,6 +115,15 @@ void print_commands(char** command_matrix);
 void print_error(char* c);
 void print_alert(char* c);
 void printf_alert(char* format, char* c);
+/*************************************** 
+ * Global Variables
+ ***************************************
+ ***************************************/
+int GLOBAL_PIPE1[2];
+int GLOBAL_PIPE2[2];
+int MULTIPLE_PIPES_FLAG = FALSE;
+char LAST_COMMAND_LINE[MAX_COMMAND_SIZE];
+char* LAST_COMMAND_MATRIX;
 /*************************************** 
  * Main
  ***************************************
@@ -139,6 +157,7 @@ void loop_shell(){
 
 }
 void finish_shell(){
+	close_pipes();
 	printf("\033[0;1m----------------------------------\033[1;31mbye\033[0;1m..\n");
 }
 /*************************************** 
@@ -182,44 +201,45 @@ int execute_commands(char* line){
 	int i = 0, status;
 	while(command_tokens[i] != NULL){
 		if(is_command(command_tokens[i])){// encontrou um COMANDO
-			char** argsv; // Command Args
+			char** argv; // Command Args
 			if(exists_operator_before(command_tokens, i)){
 				if(exists_operator_after(command_tokens, i)){
 					print_alert("There's a command between operators");
 					char* before_operator = command_tokens[i-1];  // before operator (always is the token before the command itself)
-					argsv = get_command_parameters(command_tokens, &i);// get command arguments
+					argv = get_command_parameters(command_tokens, &i);// get command arguments
 					char* after_operator = command_tokens[i];  // after operator
-					status = cmd_between_operator(argsv, before_operator, after_operator);// handle operator and execute the command
+					status = cmd_between_operator(argv, before_operator, after_operator);// handle operator and execute the command
 				}else{
 					print_alert("There's a operator before command");
 					char* operator = command_tokens[i-1];  // actual operator (always is the token before the command itself)
-					argsv = get_command_parameters(command_tokens, &i);// get command arguments
-					status = cmd_after_operator(argsv, operator);// handle operator and execute the command
+					argv = get_command_parameters(command_tokens, &i);// get command arguments
+					status = cmd_after_operator(argv, operator);// handle operator and execute the command
 				}
 			}else if(exists_operator_after(command_tokens, i)){
 				print_alert("There's a operator after command");
-				argsv = get_command_parameters(command_tokens, &i);// get command arguments
+				argv = get_command_parameters(command_tokens, &i);// get command arguments
 				char* operator = command_tokens[i];  // actual operator
-				status = cmd_before_operator(argsv, operator);// handle operator and execute the command
+				status = cmd_before_operator(argv, operator);// handle operator and execute the command
 			}else{
 				print_alert("Single Command");
-				argsv = get_command_parameters(command_tokens, &i);// get command arguments
-				status = cmd_no_operator(argsv);
+				argv = get_command_parameters(command_tokens, &i);// get command arguments
+				status = cmd_no_operator(argv);
 			}
 		}
 		i++; // Next Token
 	}
 	close_pipes();
 	MULTIPLE_PIPES_FLAG = FALSE;
+	strcpy(LAST_COMMAND_LINE, line); // Store last command line
 	printf("\033[0m");
 	return status;// SHELL_STATUS_CONTINUE
 }
-int execute_standard_sync_command(char** argsv){
+int execute_standard_sync_command(char** argv){
 	pid_t child;
 	//print_commands(com_mat);
 	child = fork();
 	if(child == 0){
-		if(execvp(argsv[0], argsv) < 0){
+		if(execvp(argv[0], argv) < 0){
 			print_error("Comando possívelmente invalido ou incompleto:");
 			perror("->");
 		}
@@ -247,41 +267,52 @@ int execute_standard_async_command(char** argv){
  * Operator Position Idenftify
  ***************************************
  ***************************************/
-int cmd_no_operator(char** argsv){
-	return execute_standard_sync_command(argsv);
+int cmd_no_operator(char** argv){
+	// Comandos internos do shell
+	if( strcmp(argv[0], "close") == 0){
+		return SHELL_STATUS_CLOSE;
+	}else if( strcmp(argv[0], "help") == 0){
+		return execute_internal_help();
+	}else if( strcmp(argv[0], "last") == 0){
+		return execute_internal_last();
+	}else  // Single Command
+		return execute_standard_sync_command(argv);	
 }
-int cmd_before_operator(char** argsv, char* operator){
+int cmd_before_operator(char** argv, char* operator){
 	if( is_operator(operator, '|') ){  // handles pipe operator
 		print_alert("COMMAND BEFORE A PIPE");
-		return cmd_before_operator_handle_pipe(argsv);
+		return cmd_before_operator_handle_pipe(argv);
 	}else if( is_operator(operator, '&') ){  // handles background command
-		return execute_standard_async_command(argsv);
+		return execute_standard_async_command(argv);
 	}else{
 		print_error("Operador nao identificado");
 	}
 }
-int cmd_between_operator(char** argsv, char* before_operator, char* after_operator){
+int cmd_between_operator(char** argv, char* before_operator, char* after_operator){
 	// Handles Command between two PIPEs 
 	if( is_operator(before_operator, '|') && is_operator(after_operator, '|')){
-		return cmd_between_operator_handle_pipe_pipe(argsv);
-	}else if( is_operator(before_operator, '&')){  // Assync command
-		return execute_standard_async_command(argsv);
+		return cmd_between_operator_handle_pipe_pipe(argv);
+	}else if( is_operator(before_operator, '&') &&  is_operator(after_operator, '&')){  // Assync command
+		return execute_standard_async_command(argv);  // Just run assync and go to the next command
+	}else if( is_operator(before_operator, '&') &&  is_operator(after_operator, '|')){  // Assync command
+		print_alert("Pipe e &");
+		return cmd_before_operator_handle_pipe(argv);  // Handle the pipe after
 	}
 }
-int cmd_after_operator(char** argsv, char* operator){
+int cmd_after_operator(char** argv, char* operator){
 	// Handles PIPE Operator
 	if( is_operator(operator, '|') ){  // handles pipe operator
 		print_alert("COMMAND AFTER A PIPE");
-		return cmd_after_operator_handle_pipe(argsv);
+		return cmd_after_operator_handle_pipe(argv);
 	}else if( is_operator(operator, '&') ){  // handles background cmd
-		return execute_standard_sync_command(argsv);
+		return execute_standard_sync_command(argv);
 	}
 }
 /*************************************** 
  * Operator Handling
  ***************************************
  ***************************************/
-int cmd_before_operator_handle_pipe(char** argsv){
+int cmd_before_operator_handle_pipe(char** argv){
 	// PRIMEIRO SEMPRE ESCREVE NO PIPE 1
 	MULTIPLE_PIPES_FLAG = !MULTIPLE_PIPES_FLAG;
 	pid_t child;
@@ -290,7 +321,7 @@ int cmd_before_operator_handle_pipe(char** argsv){
 	if(child == 0){  // PRIMEIRO COMANDO
 		close_fd(GLOBAL_PIPE1[READ_END]);// child NUNCA LÊ DO PIPE 1
 		dup2(GLOBAL_PIPE1[WRITE_END], STDOUT_FILENO); // child SEMPRE ESCREVE NO PIPE 1
-		if(execvp(argsv[0], argsv) < 0){  // EXECUTA O COMANDO
+		if(execvp(argv[0], argv) < 0){  // EXECUTA O COMANDO
 			print_error("Comando possívelmente invalido ou incompleto:");
 			return SHELL_STATUS_CONTINUE;
 		}
@@ -301,7 +332,7 @@ int cmd_before_operator_handle_pipe(char** argsv){
 	}
 	return SHELL_STATUS_CONTINUE;
 }
-int cmd_between_operator_handle_pipe_pipe(char** argsv){
+int cmd_between_operator_handle_pipe_pipe(char** argv){
 	MULTIPLE_PIPES_FLAG = !MULTIPLE_PIPES_FLAG;
 	pid_t child;
 	if(MULTIPLE_PIPES_FLAG){ // 
@@ -325,7 +356,7 @@ int cmd_between_operator_handle_pipe_pipe(char** argsv){
 			dup2(GLOBAL_PIPE1[READ_END], STDIN_FILENO);// LER DO PIPE 1
 			dup2(GLOBAL_PIPE2[WRITE_END], STDOUT_FILENO); // ESCREVER NO PIPE 2
 		}
-		if(execvp(argsv[0], argsv) < 0)
+		if(execvp(argv[0], argv) < 0)
 			print_error("Comando possívelmente invalido ou incompleto:");
 	}else{
 		if(MULTIPLE_PIPES_FLAG){ // IMPAR
@@ -340,7 +371,7 @@ int cmd_between_operator_handle_pipe_pipe(char** argsv){
 	}
 	return SHELL_STATUS_CONTINUE;
 }
-int cmd_after_operator_handle_pipe(char** argsv){
+int cmd_after_operator_handle_pipe(char** argv){
 // ULTIMO COMANDO: SEMPRE ESCREVE NA SAIDA PADRÃO; PODE LER DO PIPE 1 OU DO 2
 // LE DO PIPE 1 CASO NAO HOUVER COMANDOS INTERNOS OU TIVER UM NUMERO PAR DE COMANDOS INTERNOS
 // LE DO PIPE 2 CASO HOUVER UM NUMERO IMPAR DE COMANDOS INTERNOS
@@ -352,7 +383,7 @@ int cmd_after_operator_handle_pipe(char** argsv){
 		}else{// OU LE DO 1 OU LE DO 2:
 			dup2(GLOBAL_PIPE2[READ_END], STDIN_FILENO); // LE DO PIPE 2
 		}
-		if(execvp(argsv[0], argsv) < 0){
+		if(execvp(argv[0], argv) < 0){
 			print_error("Comando possívelmente invalido ou incompleto:");
 			return SHELL_STATUS_CONTINUE;
 		}
@@ -404,9 +435,22 @@ void close_pipes(){
 		close(GLOBAL_PIPE2[WRITE_END]);
 		
 	if(GLOBAL_PIPE2[READ_END] != 0)
-		close(GLOBAL_PIPE2[READ_END]);
-		
-		
+		close(GLOBAL_PIPE2[READ_END]);	
+
+}
+/*************************************** 
+ * Internal Commands
+ ***************************************
+ ***************************************/
+int execute_internal_help(){
+	print_alert("-- Shell Internal Commands: --");
+	print_alert("	<help>: Show Internal Commands");
+	print_alert("	<close>: Close K-Shell");
+	return SHELL_STATUS_CONTINUE;
+}
+int execute_internal_last(){
+	print_alert(LAST_COMMAND_LINE);
+	return SHELL_STATUS_CONTINUE;
 }
 /*************************************** 
  * Funções e Procedimentos Auxiliares
